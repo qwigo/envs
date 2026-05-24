@@ -1,6 +1,5 @@
-coverage==4.2
-nose==1.3.7
-mock
+pytest>=7.0
+pytest-cov
 jinja2>=2.8
-click>=6.6
+click>=8.0
 terminaltables>=3.0.0
