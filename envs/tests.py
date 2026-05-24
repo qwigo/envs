@@ -1,57 +1,60 @@
 import os
-import unittest
-from decimal import Decimal, InvalidOperation
-import json
-
-try:
-    # python 3.4+ should use builtin unittest.mock not mock package
-    from unittest.mock import patch
-    from unittest import mock
-except ImportError:
-    from mock import patch
-    import mock
-
 import sys
+import unittest
+from decimal import Decimal
+import json
+from unittest.mock import patch
+from unittest import mock
 
-from envs import env
+from envs import env, ENVS_RESULT_FILENAME
 from envs.exceptions import EnvsValueException
+
+
+_SETUP_KEYS = [
+    'VALID_INTEGER', 'INVALID_INTEGER', 'VALID_STRING',
+    'VALID_BOOLEAN', 'VALID_BOOLEAN_FALSE', 'INVALID_BOOLEAN',
+    'VALID_LIST', 'INVALID_LIST', 'VALID_TUPLE', 'INVALID_TUPLE',
+    'VALID_DICT', 'INVALID_DICT', 'VALID_FLOAT', 'INVALID_FLOAT',
+    'VALID_DECIMAL', 'INVALID_DECIMAL', 'EMPTY',
+]
+
 
 class EnvTestCase(unittest.TestCase):
     def setUp(self):
-        # Integer
         os.environ.setdefault('VALID_INTEGER', '1')
         os.environ.setdefault('INVALID_INTEGER', '["seven"]')
-        # String
         os.environ.setdefault('VALID_STRING', 'seven')
-        # Boolean
         os.environ.setdefault('VALID_BOOLEAN', 'True')
         os.environ.setdefault('VALID_BOOLEAN_FALSE', 'false')
         os.environ.setdefault('INVALID_BOOLEAN', 'seven')
-        # List
         os.environ.setdefault('VALID_LIST', "['1','2','3']")
         os.environ.setdefault('INVALID_LIST', "1")
-        # Tuple
         os.environ.setdefault('VALID_TUPLE', "('True','FALSE')")
         os.environ.setdefault('INVALID_TUPLE', '1')
-        # Dict
         os.environ.setdefault('VALID_DICT', "{'first_name':'Suge'}")
         os.environ.setdefault('INVALID_DICT', 'Aaron Rogers')
-        # Float
         os.environ.setdefault('VALID_FLOAT', "5.0")
         os.environ.setdefault('INVALID_FLOAT', '[5.0]')
-        # Decimal
         os.environ.setdefault('VALID_DECIMAL', "2.39")
         os.environ.setdefault('INVALID_DECIMAL', "FOOBAR")
+
+    def tearDown(self):
+        for key in _SETUP_KEYS + ['ZERO_COUNT', 'FALSY_BOOL']:
+            os.environ.pop(key, None)
+        if os.path.exists(ENVS_RESULT_FILENAME):
+            os.remove(ENVS_RESULT_FILENAME)
+
+    # --- existing tests (vm removed) ---
 
     def test_integer_valid(self):
         self.assertEqual(1, env('VALID_INTEGER', var_type='integer'))
 
     def test_integer_invalid(self):
-        with self.assertRaises(TypeError) as vm:
+        with self.assertRaises(TypeError):
             env('INVALID_INTEGER', var_type='integer')
 
     def test_wrong_var_type(self):
-        with self.assertRaises(ValueError) as vm:
+        with self.assertRaises(ValueError):
             env('INVALID_INTEGER', var_type='set')
 
     def test_string_valid(self):
@@ -64,42 +67,42 @@ class EnvTestCase(unittest.TestCase):
         self.assertEqual(False, env('VALID_BOOLEAN_FALSE', var_type='boolean'))
 
     def test_boolean_invalid(self):
-        with self.assertRaises(ValueError) as vm:
+        with self.assertRaises(ValueError):
             env('INVALID_BOOLEAN', var_type='boolean')
 
     def test_list_valid(self):
         self.assertEqual(['1', '2', '3'], env('VALID_LIST', var_type='list'))
 
     def test_list_invalid(self):
-        with self.assertRaises(TypeError) as vm:
+        with self.assertRaises(TypeError):
             env('INVALID_LIST', var_type='list')
 
     def test_tuple_valid(self):
         self.assertEqual(('True', 'FALSE'), env('VALID_TUPLE', var_type='tuple'))
 
     def test_tuple_invalid(self):
-        with self.assertRaises(TypeError) as vm:
+        with self.assertRaises(TypeError):
             env('INVALID_TUPLE', var_type='tuple')
 
     def test_dict_valid(self):
         self.assertEqual({'first_name': 'Suge'}, env('VALID_DICT', var_type='dict'))
 
     def test_dict_invalid(self):
-        with self.assertRaises(SyntaxError) as vm:
+        with self.assertRaises(SyntaxError):
             env('INVALID_DICT', var_type='dict')
 
     def test_float_valid(self):
         self.assertEqual(5.0, env('VALID_FLOAT', var_type='float'))
 
     def test_float_invalid(self):
-        with self.assertRaises(TypeError) as vm:
+        with self.assertRaises(TypeError):
             env('INVALID_FLOAT', var_type='float')
 
     def test_decimal_valid(self):
         self.assertEqual(Decimal('2.39'), env('VALID_DECIMAL', var_type='decimal'))
 
     def test_decimal_invalid(self):
-        with self.assertRaises(ArithmeticError) as vm:
+        with self.assertRaises(ArithmeticError):
             env('INVALID_DECIMAL', var_type='decimal')
 
     def test_defaults(self):
@@ -148,54 +151,104 @@ class EnvTestCase(unittest.TestCase):
         with self.assertRaises(ArithmeticError):
             env('EMPTY', var_type='decimal')
 
-'''
-Each CLI Test must be run outside of test suites in isolation
-since Click CLI Runner alters the global context
-'''
-def setup_CliRunner(test_func):
-    '''
-    Decorator to initialize environment for CliRunner.
-    '''
-    def wrapper():
+    # --- n4: package exposes __version__ ---
+
+    def test_version_string(self):
+        import envs
+        self.assertTrue(hasattr(envs, '__version__'))
+        self.assertIsInstance(envs.__version__, str)
+
+    # --- n2: VAR_TYPES is a stable snapshot, not a live dict_keys view ---
+
+    def test_var_types_is_tuple(self):
+        from envs.util import VAR_TYPES
+        self.assertIsInstance(VAR_TYPES, tuple)
+
+    # --- M1: import_mod must not permanently mutate sys.path on failed import ---
+
+    def test_import_mod_restores_sys_path_on_failure(self):
+        from envs.util import import_mod
+        original_path = list(sys.path)
+        with self.assertRaises(ModuleNotFoundError):
+            import_mod('nonexistent_module_xyz_99999')
+        self.assertEqual(original_path, sys.path)
+
+    # --- C2: list_envs_module must clean up temp file on import error ---
+
+    def test_list_envs_module_cleans_up_on_error(self):
+        from envs.util import list_envs_module
+        with self.assertRaises(Exception):
+            list_envs_module('nonexistent_module_xyz_99999')
+        self.assertFalse(os.path.exists(ENVS_RESULT_FILENAME))
+
+    # --- C1: check_envs must not raise EnvsValueException for falsy-but-set values ---
+
+    @mock.patch('envs.cli.os.remove')
+    @mock.patch('envs.cli.list_envs_module')
+    def test_check_envs_does_not_raise_for_falsy_integer(self, mock_list, mock_remove):
         from click.testing import CliRunner
-        try:
-            from cli import envs as cli_envs
-        except ImportError:
-            from .cli import envs as cli_envs
+        from envs.cli import envs as cli_envs
+        mock_list.return_value = [{'key': 'ZERO_COUNT', 'var_type': 'integer', 'default': 0}]
+        os.environ['ZERO_COUNT'] = '0'
+        runner = CliRunner()
+        result = runner.invoke(
+            cli_envs,
+            ['check-envs', '--settings-file', 'envs.test_settings_falsy'],
+        )
+        self.assertEqual(result.exit_code, 0)
 
-        try:
-            from cli import envs
-        except ImportError:
-            from .cli import envs
+    # --- M5: check_envs cleans up temp file even when it raises ---
 
-        test_func()
+    @mock.patch('envs.cli.list_envs_module')
+    def test_check_envs_cleans_up_result_file_on_missing_var(self, mock_list):
+        from click.testing import CliRunner
+        from envs.cli import envs as cli_envs
+        mock_list.return_value = [{'key': 'MISSING_VAR', 'var_type': 'string', 'default': None}]
+        os.environ.pop('MISSING_VAR', None)
+        with open(ENVS_RESULT_FILENAME, 'w') as f:
+            f.write('[]')
+        runner = CliRunner()
+        runner.invoke(
+            cli_envs,
+            ['check-envs', '--settings-file', 'envs.test_settings_falsy'],
+        )
+        self.assertFalse(
+            os.path.exists(ENVS_RESULT_FILENAME),
+            'temp file should be removed even when check_envs raises',
+        )
 
-    return wrapper
 
-@mock.patch.object(sys, 'argv', ["list-envs"])
-@setup_CliRunner
+# --- CLI test for list-envs ---
+
+@mock.patch.object(sys, 'argv', ['list-envs'])
 def test_list_envs():
+    from click.testing import CliRunner
+    from envs.cli import envs as cli_envs
+
     os.environ.setdefault('DEBUG', 'True')
-
     runner = CliRunner()
-    result = runner.invoke(envs, ['list-envs', '--settings-file', 'envs.test_settings', '--keep-result', 'True'], catch_exceptions=False)
+    result = runner.invoke(
+        cli_envs,
+        ['list-envs', '--settings-file', 'envs.test_settings', '--keep-result', 'True'],
+        catch_exceptions=False,
+    )
 
-    output_expected = [{"default": None, "value": None, "var_type": "string", "key": "DATABASE_URL"},{"default": False, "value": "True", "var_type": "boolean", "key": "DEBUG"},{"default": [], "value": None, "var_type": "list", "key": "MIDDLEWARE"},{}]
+    output_expected = [
+        {"default": None, "value": None, "var_type": "string", "key": "DATABASE_URL"},
+        {"default": False, "value": "True", "var_type": "boolean", "key": "DEBUG"},
+        {"default": [], "value": None, "var_type": "list", "key": "MIDDLEWARE"},
+        {},
+    ]
 
-    with open('.envs_result', 'r') as f:
+    with open(ENVS_RESULT_FILENAME, 'r') as f:
         output_actual = json.load(f)
 
-    exit_code_expected = 0
-    exit_code_actual = result.exit_code
+    os.remove(ENVS_RESULT_FILENAME)
+    os.environ.pop('DEBUG', None)
 
-
-    assert exit_code_actual == exit_code_expected
+    assert result.exit_code == 0
     assert output_actual == output_expected
-
-
-
 
 
 if __name__ == '__main__':
     unittest.main()
-
