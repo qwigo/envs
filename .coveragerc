@@ -1,0 +1,7 @@
+[run]
+omit =
+    envs/test_settings*.py
+
+[report]
+omit =
+    envs/test_settings*.py
