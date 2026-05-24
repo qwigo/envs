@@ -1,5 +1,6 @@
 import os
 import sys
+import types as _types
 import unittest
 from decimal import Decimal
 import json
@@ -216,6 +217,135 @@ class EnvTestCase(unittest.TestCase):
             os.path.exists(ENVS_RESULT_FILENAME),
             'temp file should be removed even when check_envs raises',
         )
+
+
+class UtilTestCase(unittest.TestCase):
+    """Tests for envs/util.py — import_util and convert_module."""
+
+    # --- import_util ---
+
+    def test_import_util_returns_correct_callable(self):
+        from envs.util import import_util
+        result = import_util('os.path.join')
+        self.assertIs(result, os.path.join)
+
+    def test_import_util_returns_module_level_value(self):
+        from envs.util import import_util
+        result = import_util('os.sep')
+        self.assertEqual(result, os.sep)
+
+    # --- convert_module ---
+
+    def _make_module(self, **attrs):
+        mod = _types.ModuleType('fake_settings')
+        for k, v in attrs.items():
+            setattr(mod, k, v)
+        return mod
+
+    def test_convert_module_skips_lowercase_attributes(self):
+        from envs.util import convert_module
+        mod = self._make_module(lowercase='ignored', UPPERCASE='included')
+        with mock.patch('builtins.input', return_value='0'):
+            result = convert_module(mod)
+        names = [r['name'] for r in result]
+        self.assertNotIn('lowercase', names)
+        self.assertIn('UPPERCASE', names)
+
+    def test_convert_module_convert_false_produces_minimal_dict(self):
+        from envs.util import convert_module
+        mod = self._make_module(MY_VAR='hello')
+        with mock.patch('builtins.input', return_value='0'):
+            result = convert_module(mod)
+        self.assertEqual(len(result), 1)
+        self.assertEqual(result[0], {'name': 'MY_VAR', 'convert': False})
+
+    def test_convert_module_convert_true_with_explicit_default(self):
+        from envs.util import convert_module
+        mod = self._make_module(MY_VAR='hello')
+        # input calls: convert=1, default="'world'", var_type='string'
+        with mock.patch('builtins.input', side_effect=['1', "'world'", 'string']):
+            result = convert_module(mod)
+        self.assertEqual(result[0]['convert'], True)
+        self.assertEqual(result[0]['default_val'], 'world')
+        self.assertEqual(result[0]['var_type'], 'string')
+
+    def test_convert_module_empty_default_falls_back_to_original(self):
+        from envs.util import convert_module
+        mod = self._make_module(MY_VAR=42)
+        # Empty string for default → should keep original value 42
+        with mock.patch('builtins.input', side_effect=['1', '', 'integer']):
+            result = convert_module(mod)
+        self.assertEqual(result[0]['default_val'], 42)
+
+    def test_convert_module_invalid_var_type_raises(self):
+        from envs.util import convert_module
+        mod = self._make_module(MY_VAR='hello')
+        with mock.patch('builtins.input', side_effect=['1', '', 'set']):
+            with self.assertRaises(ValueError):
+                convert_module(mod)
+
+
+class CLICommandTestCase(unittest.TestCase):
+    """Tests for CLI commands not covered by the standalone test_list_envs."""
+
+    def tearDown(self):
+        os.environ.pop('ZERO_COUNT', None)
+        os.environ.pop('MISSING_VAR', None)
+        if os.path.exists(ENVS_RESULT_FILENAME):
+            os.remove(ENVS_RESULT_FILENAME)
+
+    # --- list-envs: file deleted when keep_result is False (default) ---
+
+    @mock.patch('envs.cli.os.remove')
+    @mock.patch('envs.cli.list_envs_module')
+    def test_list_envs_removes_result_file_by_default(self, mock_list, mock_remove):
+        from click.testing import CliRunner
+        from envs.cli import envs as cli_envs
+        mock_list.return_value = [
+            {'key': 'DATABASE_URL', 'var_type': 'string', 'default': None, 'value': None},
+        ]
+        runner = CliRunner()
+        result = runner.invoke(
+            cli_envs,
+            ['list-envs', '--settings-file', 'envs.test_settings', '--keep-result', 'False'],
+            catch_exceptions=False,
+        )
+        self.assertEqual(result.exit_code, 0)
+        mock_remove.assert_called_once_with(ENVS_RESULT_FILENAME)
+
+    # --- convert-settings: writes template and reports success ---
+
+    @mock.patch('envs.cli.convert_module')
+    @mock.patch('envs.cli.import_mod')
+    def test_convert_settings_writes_output_file(self, mock_import_mod, mock_convert):
+        from click.testing import CliRunner
+        from envs.cli import envs as cli_envs
+        mock_import_mod.return_value = _types.ModuleType('fake')
+        mock_convert.return_value = []
+        runner = CliRunner()
+        with runner.isolated_filesystem():
+            result = runner.invoke(
+                cli_envs,
+                ['convert-settings', '--settings-file', 'fake.settings'],
+                input='output_settings.py\n',
+            )
+        self.assertEqual(result.exit_code, 0)
+        self.assertIn('output_settings.py', result.output)
+
+    @mock.patch('envs.cli.convert_module')
+    @mock.patch('envs.cli.import_mod')
+    def test_convert_settings_raises_on_empty_filename(self, mock_import_mod, mock_convert):
+        from click.testing import CliRunner
+        from envs.cli import envs as cli_envs
+        mock_import_mod.return_value = _types.ModuleType('fake')
+        mock_convert.return_value = []
+        runner = CliRunner()
+        result = runner.invoke(
+            cli_envs,
+            ['convert-settings', '--settings-file', 'fake.settings'],
+            input='\n',  # empty filename
+        )
+        self.assertNotEqual(result.exit_code, 0)
 
 
 # --- CLI test for list-envs ---
